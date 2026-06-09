@@ -23,7 +23,7 @@ We fetches transaction histories (USDT & TRX logs) for all 1,100 targets via the
 * Convert logs into 13 core behavioral metrics per wallet.
 
 | ID | Feature Name | Description |
-|:-: | :----------: | :---------: |
+|:-: | :----------: | :---------- |
 | 01 | `lifespan_days` | Active days elapsed between the first and last transaction.
 | 02 | `usdt_active_day_intensity` | USDT transaction volume divided by active days.
 | 03 | `dwell_time_avg_sec` | Average time USDT sits in the wallet before outgoing transfer.
