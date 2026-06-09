@@ -119,6 +119,6 @@ Epoch 15 | Train Loss: 0.2351 | Test AUC: 0.9083 | Test F1: 0.7654
 
 | Model | Test AUC | F1-Score |
 |:----: | :------: | :------: |
-| Random Forest | 0.9928 | — |
+| Random Forest | 0.9928 | 0.9474 (Macro) |
 | GRU | 0.9384 | 0.8352 |
 | LSTM | 0.9083 | 0.7654 |
