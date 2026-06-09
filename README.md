@@ -1,68 +1,124 @@
-# 🛡️ 波場鏈（Tron）黑錢錢包偵測專案
+# TRON Laundering Behavior
 
-這個專案的目的，是利用機器學習與深度學習，幫波場鏈（Tron）找出洗錢的嫌疑錢包。我們手上有 1,100 個錢包地址，其中 660 個是去交易所抓的正常路人（標籤為 0），440 個是已知的洗錢黑名單（標籤為 1）。
-
-所有程式碼都放在 `src/` 底下，主要分成「13項統計特徵大表（隨機森林）」與「原始交易流水時序（GRU/LSTM）」兩個方式。
-
----
-
-## 📂 專案運作流程與檔案介紹
-
-團隊夥伴拿到專案後，按照下面這個順序一個個執行就可以了：
-
-### 1. 抓取資料（`src/user_collect.py` 與 `src/log_extractor.py`）
-* **`user_collect.py`**：去幣安等大交易所的熱錢包看是誰在轉帳，自動收集 660 個正常路人地址當作對照組。
-* **`log_extractor.py`**：拿著這 1,100 個黑白名單地址去 Tronscan 網站，把這些錢包所有發生的 USDT 和 TRX 交易明細（交易流水）全部下載成 CSV 檔，存到 `data/stage1_raw_logs/` 裡面。
-
-### 2. 特徵工程大表（`src/wallet_profiler.py`）
-* 每個錢包的明細長短不一樣，模型沒辦法直接讀。所以我們用 `wallet_profiler.py` 去讀交易明細，幫每個錢包算出了 13 個統計指標，整合成一張大表 `data/features_matrix.csv`（一個錢包地址只會有一行統計數據）。
-
-### 3. 隨機森林分類（`src/evaluate_features.py`）
-* 讀取那張 13 個指標的大表，用傳統的「隨機森林」演算法來猜這個錢包是好人還是壞人。同時，它還會用 t-SNE 幫高維度特徵降維，畫出一張二維的分佈圖 `features_cluster.png`，讓我們一眼看出黑白錢包在空間中有沒有分開。
-
-### 4. 讀交易節奏（`src/train_gru_raw.py` 與 `src/train_lstm_raw.py`）
-* 這個流派不用前面算好的 13 個統計指標，而是直接把那 1,100 個錢包最新 50 筆的「原始交易明細」倒進去。這兩個程式會一行行去讀交易的金額、方向，最重要的是**計算這筆交易跟上一筆交易隔了幾秒（時間差）**。
-* `train_gru_raw.py` 和 `train_lstm_raw.py` 分別用不同的時序神經網路去記住這些轉帳的節奏，看能不能分出好壞，最後把訓練好的模型存在 `data/` 裡面。
+This project utilizes Machine Learning and Deep Learning to detect money laundering activities on the TRON blockchain.
+We collect 1,100 wallet addresses: 660 normal user addresses (Label 0) from CEX counterparties without any risk label, and 440 known illicit addresses from 165 website (Label 1).
 
 ---
 
-## 📊 13 項行為特徵說明表格
+## Project Pipeline & Architecture
 
-這 13 個特徵是透過 `wallet_profiler.py` 從錢包的原始 USDT/TRX 交易明細中統計出來的，也是隨機森林用來判斷依據的「黑產行為畫像」：
+### 1. Data Collection
 
-| 編號 | 特徵名稱 (Feature Name) | 務實白話解說 | 隨機森林權重 (Importance) |
-| :--- | :--- | :--- | :--- |
-| **01** | `trx_fuel_density` | **TRX 燃料密度**：這個錢包收到的 TRX 總金額除以不重複的來源地址數。黑產通常會用自動化腳本成批分發 TRX 當作手續費，這個密度會跟一般人有顯著不同。 | **0.2010** |
-| **02** | `trx_in_max_amount` | **單筆最大 TRX 流入量**：這個錢包收過最大的一筆 TRX 是多少錢。通常用來觀察有沒有大筆手續費一次灌進來的痕跡。 | **0.1968** |
-| **03** | `in_out_amount_ratio` | **USDT 進出比例**：總存入的 USDT 除以總轉出的 USDT。洗錢水房追求快進快出、戶頭不留錢，所以比例會極度逼近 1.0；一般散戶通常會存錢，比例會大於 1。 | **0.1490** |
-| **04** | `otc_ping_pong_count` | **OTC 乒乓短時暴增次數**：在 10 分鐘內，跟同一個對手地址連續轉帳，且第二筆金額是第一筆的 50 倍以上。這是在抓 OTC 商戶或水房高頻對敲、快速試探的行為。 | **0.0876** |
-| **05** | `daily_net_retention_avg` | **每日淨留存率平均值**：每天戶頭裡（存入 - 轉出）除以（存入 + 轉出）的平均。一樣是用來看這個錢包每天留不留得住錢。 | **0.0612** |
-| **06** | `balance_sawtooth_score` | **餘額鋸齒波分數**：把每天的戶頭餘額連成一條線，計算它上下波動的劇烈程度。水房的餘額通常會像「鋸齒」一樣，突然暴漲又瞬間歸零。 | **0.0575** |
-| **07** | `lifespan_days` | **錢包壽命天數**：從這個錢包的第一筆交易到最後一筆交易一共活了幾天。洗錢水房很多都是用過即丟，壽命通常很短。 | **0.0571** |
-| **08** | `dwell_time_avg_sec` | **資金平均停留秒數**：USDT 轉進來之後，平均隔了多少秒才會被轉出去。用來抓那種一收到錢幾秒內就自動轉走的機器人。 | **0.0518** |
-| **09** | `usdt_active_day_intensity` | **USDT 活躍天數密集度**：總 USDT 交易筆數除以它有交易的天數。用來看它在有開工的日子裡，是不是高頻率地在洗錢。 | **0.0480** |
-| **10** | `balance_zero_days_ratio` | **戶頭歸零天數比例**：在所有活躍的日子裡，戶頭餘額接近 0 的天數佔了幾成。水房洗乾淨後不留尾巴，歸零比例會非常高。 | **0.0354** |
-| **11** | `transit_pass_through_count` | **過水（直通）次數**：收到一筆 USDT 後，在 2 小時內立刻轉出一筆金額一模一樣的 USDT（誤差在 0.01 以內）。這是經典的過水帳戶特徵。 | **0.0188** |
-| **12** | `aggregation_count` | **資金聚合次數**：在 2 小時內，收到 3 筆以上的小額 USDT，隨後一筆大額 USDT 轉出（轉出金額大於這幾筆輸入的最大值）。代表上游散戶進錢，下游一次收割。 | **0.0178** |
-| **13** | `peeling_chain_count` | **層壓剝離（剝洋蔥）次數**：收到一筆大額 USDT 後，在 2 小時內連續轉出 3 筆以上的小額 USDT。這是洗錢分流（剝洋蔥）的經典手法。 | **0.0178** |
+We fetches transaction histories (USDT & TRX logs) for all 1,100 targets via the Tronscan API, storing them in `data/stage1_raw_logs/`
+
+### 2. Feature Engineering
+
+* **What's we find while collecting illicit addresses ?**
+    - Funds come in and quickly go out.
+    - The wallet is active for only a short time.
+    - The daily ending balance is often zero.
+    - OTC cash trades are made with unknown parties, often with a small test transfer first.
+    - TRX mainly comes from one large source.
+
+* Convert logs into 13 core behavioral metrics per wallet.
+
+| ID | Feature Name | Description |
+|:-: | :----------: | :---------: |
+| 01 | `lifespan_days` | Active days elapsed between the first and last transaction.
+| 02 | `usdt_active_day_intensity` | USDT transaction volume divided by active days.
+| 03 | `dwell_time_avg_sec` | Average time USDT sits in the wallet before outgoing transfer.
+| 04 | `in_out_amount_ratio` | Ratio of total USDT deposited to total withdrawn.
+| 05 | `peeling_chain_count` | Single macro input split into multiple sequential micro outputs (layering/peeling).
+| 06 | `aggregation_count` | Multiple minor inputs consolidated into a single macro output within 2 hours.
+| 07 | `transit_pass_through_count` | Instant identical forwarding (USDT matching input within 2 hours, error < 0.01).
+| 08 | `daily_net_retention_avg` | Average daily capital retention rate. Measures if the account accumulates or drains funds.
+| 09 | `balance_zero_days_ratio` | Percentage of active days where the wallet balance is wiped to zero.
+| 10 | `balance_sawtooth_score` | Metric for volatile balance fluctuations. Captures rapid filling and clearing cycles.
+| 11 | `otc_ping_pong_count` | High-frequency back-and-forth trades with the same counterpart within 10 mins (>50x size shift).
+| 12 | `trx_in_max_amount` | Maximum single TRX deposit volume.
+| 13 | `trx_fuel_density` | Total TRX received divided by unique source addresses.
+
+### 3. Machine Learning Classification
+
+Use a **Random Forest** classifier on the 13-feature matrix.
+
+```
+=== Baseline Model Performance ===
+              precision    recall  f1-score   support
+
+           0     0.9416    0.9773    0.9591       132
+           1     0.9639    0.9091    0.9357        88
+
+    accuracy                         0.9500       220
+   macro avg     0.9527    0.9432    0.9474       220
+weighted avg     0.9505    0.9500    0.9497       220
+
+ROC AUC Score: 0.9928
+
+=== Feature Importance Ranking ===
+01. trx_fuel_density               : 0.2010
+02. trx_in_max_amount              : 0.1968
+03. in_out_amount_ratio            : 0.1490
+04. otc_ping_pong_count            : 0.0876
+05. daily_net_retention_avg        : 0.0612
+06. balance_sawtooth_score         : 0.0575
+07. lifespan_days                  : 0.0571
+08. dwell_time_avg_sec             : 0.0518
+09. usdt_active_day_intensity      : 0.0480
+10. balance_zero_days_ratio        : 0.0354
+11. transit_pass_through_count     : 0.0188
+12. aggregation_count              : 0.0178
+13. peeling_chain_count            : 0.0178
+```
+
+### 4. Sequential Deep Learning
+
+Bypasses the 13 manual features. Trains recurrent networks (**GRU / LSTM**) directly on the raw chronological stream of the last **50** transactions, utilizing transaction amounts, directions, and time differentials (`time_delta`).
+
+```
+GRU Sequential Training
+Epoch 01 | Train Loss: 0.6447 | Test AUC: 0.7766 | Test F1: 0.6355
+Epoch 02 | Train Loss: 0.5478 | Test AUC: 0.9030 | Test F1: 0.7285
+Epoch 03 | Train Loss: 0.3956 | Test AUC: 0.9132 | Test F1: 0.6619
+Epoch 04 | Train Loss: 0.3466 | Test AUC: 0.9366 | Test F1: 0.8128
+Epoch 05 | Train Loss: 0.2760 | Test AUC: 0.9520 | Test F1: 0.8125
+Epoch 06 | Train Loss: 0.2474 | Test AUC: 0.9338 | Test F1: 0.8049
+Epoch 07 | Train Loss: 0.2435 | Test AUC: 0.9486 | Test F1: 0.8323
+Epoch 08 | Train Loss: 0.2273 | Test AUC: 0.9547 | Test F1: 0.8466
+Epoch 09 | Train Loss: 0.2255 | Test AUC: 0.9473 | Test F1: 0.8439
+Epoch 10 | Train Loss: 0.2250 | Test AUC: 0.9469 | Test F1: 0.8323
+Epoch 11 | Train Loss: 0.2192 | Test AUC: 0.9410 | Test F1: 0.8049
+Epoch 12 | Train Loss: 0.1918 | Test AUC: 0.9468 | Test F1: 0.8523
+Epoch 13 | Train Loss: 0.1871 | Test AUC: 0.9424 | Test F1: 0.8362
+Epoch 14 | Train Loss: 0.1851 | Test AUC: 0.9456 | Test F1: 0.8508
+Epoch 15 | Train Loss: 0.1952 | Test AUC: 0.9384 | Test F1: 0.8352
+```
+
+```
+LSTM Sequential Training
+Epoch 01 | Train Loss: 0.6377 | Test AUC: 0.8170 | Test F1: 0.0444
+Epoch 02 | Train Loss: 0.5353 | Test AUC: 0.8871 | Test F1: 0.6154
+Epoch 03 | Train Loss: 0.4448 | Test AUC: 0.8772 | Test F1: 0.7089
+Epoch 04 | Train Loss: 0.4114 | Test AUC: 0.8617 | Test F1: 0.7435
+Epoch 05 | Train Loss: 0.4210 | Test AUC: 0.8831 | Test F1: 0.7716
+Epoch 06 | Train Loss: 0.3795 | Test AUC: 0.8838 | Test F1: 0.7789
+Epoch 07 | Train Loss: 0.3565 | Test AUC: 0.9032 | Test F1: 0.7576
+Epoch 08 | Train Loss: 0.3754 | Test AUC: 0.8625 | Test F1: 0.7644
+Epoch 09 | Train Loss: 0.3322 | Test AUC: 0.8925 | Test F1: 0.7701
+Epoch 10 | Train Loss: 0.3157 | Test AUC: 0.8753 | Test F1: 0.7821
+Epoch 11 | Train Loss: 0.3181 | Test AUC: 0.8954 | Test F1: 0.7835
+Epoch 12 | Train Loss: 0.2886 | Test AUC: 0.8860 | Test F1: 0.7640
+Epoch 13 | Train Loss: 0.3008 | Test AUC: 0.8858 | Test F1: 0.7708
+Epoch 14 | Train Loss: 0.2785 | Test AUC: 0.8783 | Test F1: 0.7845
+Epoch 15 | Train Loss: 0.2351 | Test AUC: 0.9083 | Test F1: 0.7654
+```
 
 ---
 
-## 📈 三份真實模型結果分析與比較
+## Model Benchmark 
 
-根據我們目前跑出來的 3 份真實 `result.txt` 檔案，我們可以得出以下結論：
-
-### 1. 隨機森林（RandomForestClassifier）— 表現最好
-* **數據表現**：測試集的 AUC 分數高達 **0.9928**，總體準確率（Accuracy）達到 **95.00%**。
-* **科學解讀**：這個傳統方法是目前最準的。只要看我們算出來的那 13 個統計指標，模型幾乎有 99% 的把握能把好人和壞人分乾淨。從特徵排名來看，前兩名最重要的都是 **TRX 手續費相關特徵**（`trx_fuel_density` 和 `trx_in_max_amount`），這代表黑產錢包在準備轉帳手續費時的行為漏洞最大，很容易被傳統隨機森林抓到。
-
-### 2. GRU 網路 — 時序流派的最佳解
-* **數據表現**：第 15 輪跑完，Train Loss（錯誤率）降到 **0.1952**，測試集 AUC 穩定在 **0.9384**（過程中最高到 **0.9547**），F1 分數 **0.8352**。
-* **科學解讀**：GRU 表現很不錯。我們不需要幫它算任何統計指標，它光 es 去讀最新 50 筆交易的「金額、方向、時間差」，就能有 93%~95% 的正確率抓到壞人。這代表洗錢水房那種「高頻快進快出」的轉帳節奏，被 GRU 的更新門與重置門成功記住了。
-
-### 3. LSTM 網路 — 本次實驗表現最差
-* **數據表現**：第 15 輪跑完，Train Loss 是 **0.2351**，測試集 AUC 只有 **0.9083**，F1 分數 **0.7654**。
-* **科學解讀**：LSTM 在這次實驗中輸給了 GRU。在第一輪（Epoch 1）的時候，LSTM 的 F1 分數慘死在 **0.0444**，代表它一開始幾乎完全抓不到人。雖然到後面慢慢學到東西，但最終不論是 Loss 還是 AUC（0.9083）都比 GRU 差。這是因為在我們目前的 1,100 個樣本量以及 50 筆交易的長度下，LSTM 的架構太複雜了，學得比較慢，模型容易過擬合。
-
-### 🏁 最終結論
-在我們的專案中，**隨機森林** 看統計大表是最準的；但如果不想花時間做特徵工程、打算直接用原始流水進行即時風控，那麼 **GRU** 會是比 LSTM 更好的選擇，因為它結構精簡、學得快，在短序列的轉帳節奏感抓得更敏銳。
+| Model | Test AUC | F1-Score |
+|:----: | :------: | :------: |
+| Random Forest | 0.9928 | — |
+| GRU | 0.9384 | 0.8352 |
+| LSTM | 0.9083 | 0.7654 |
